@@ -1,0 +1,7 @@
+import "sample.spy";
+
+main: () -> void {
+	
+	vec := make_vector(10.5, 13.2);	
+
+}

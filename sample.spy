@@ -1,0 +1,9 @@
+struct Vector {
+	x: float;
+	y: float;
+	magnitude: float;
+};	
+
+make_vector: (x: float, y: float) -> ^Vector {
+
+}
