@@ -1,0 +1,1 @@
+printf: foreign (format: ^byte, ..) -> int;

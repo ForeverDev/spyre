@@ -107,6 +107,7 @@ Expression::isBinaryType(Expression_Binary_Type type) const {
 
 bool
 Expression::isAssignment() const {
+	if (!this) return false;
 	return (
 		isBinaryType(BINARY_ASSIGNMENT) ||
 		isBinaryType(BINARY_INCREMENT_BY) ||
@@ -239,6 +240,7 @@ Expression_Cast::typecheck(Parse_Context* context) {
 Datatype_Base*
 Expression_Identifier::typecheck(Parse_Context* context) {
 	Var_Declaration* local = context->getLocal(value);
+	var = local;
 	if (!local) {
 		return (eval = context->getTypeInfo("void"));
 	}
@@ -260,11 +262,12 @@ Expression_Call::typecheck(Parse_Context* context) {
 	id = dynamic_cast<Expression_Identifier *>(procedure);
 	func_name += (id ? id->value : "<computed_call>");
 	proc = dynamic_cast<Datatype_Procedure *>(proc_exp);
-	if (num_args != proc->args.size()) {
+	int expected_args = proc->args.size();
+	if ((proc->is_vararg && num_args < expected_args) || (!proc->is_vararg && num_args != proc->args.size())) {
 		std::string err = "passing incorrect number of arguments to function '";
 		err += func_name;
 		err += "' expected ";
-		err += std::to_string(proc->args.size());
+		err += std::to_string(expected_args);
 		err += ", got ";
 		err += std::to_string(num_args);
 		context->die(err);
@@ -290,7 +293,7 @@ Expression_Call::typecheck(Parse_Context* context) {
 
 	if (num_args == 1) {
 		compare_args(proc->args[0]->dt, argument->eval, 0);
-	} else if (num_args > 1) {
+	} else if (expected_args > 1) {
 		Expression_Binary* comma = dynamic_cast<Expression_Binary *>(argument);
 		// walk down to the lowest comma
 		for (int i = 0; i < num_args - 2; i++) {
@@ -298,7 +301,7 @@ Expression_Call::typecheck(Parse_Context* context) {
 		}
 		compare_args(proc->args[0]->dt, comma->left->eval, 0);
 		compare_args(proc->args[1]->dt, comma->right->eval, 1);
-		for (int i = 0; i < num_args - 2; i++) {
+		for (int i = 0; i < expected_args - 2; i++) {
 			comma = dynamic_cast<Expression_Binary *>(comma->parent);
 			compare_args(proc->args[i + 2]->dt, comma->right->eval, i + 2);
 		}
@@ -310,7 +313,7 @@ Expression_Call::typecheck(Parse_Context* context) {
 
 Datatype_Base*
 Expression_String::typecheck(Parse_Context* context) {
-	return (eval = context->getTypeInfo("string"));
+	return (eval = context->type_string);
 }
 
 void
@@ -514,6 +517,7 @@ Expression::print(int ind = 0) const {
 	const Expression_Datatype*   f = dynamic_cast<const Expression_Datatype* >(this);
 	const Expression_Call*	     g = dynamic_cast<const Expression_Call *>(this);
 	const Expression_Cast*	     h = dynamic_cast<const Expression_Cast *>(this);
+	const Expression_String*     i = dynamic_cast<const Expression_String *>(this);
 
 	indent(ind);
 
@@ -541,6 +545,8 @@ Expression::print(int ind = 0) const {
 		indent(ind + 1);
 		std::cout << h->target->as_string << std::endl;
 		h->operand->print(ind + 1);
+	} else if (i) {
+		std::cout << i->value << std::endl;
 	}
 
 }
@@ -793,6 +799,16 @@ Datatype_Struct::tostr() const {
 		str += ";";
 	}
 	return str;
+}
+
+Var_Declaration*
+Datatype_Struct::getField(const std::string& field) {
+	for (Var_Declaration* member: members) {
+		if (member->identifier == field) {
+			return member;
+		}
+	}
+	return nullptr;
 }
 
 
@@ -1085,10 +1101,14 @@ Parse_Context::parseDatatype() {
 	} else if (onOperator("(")) {
 		Datatype_Procedure* proc = new Datatype_Procedure();
 		eatOperator("(");
-		while (matchesDeclaration() || matchesDatatype()) {
+		while (matchesDeclaration() || matchesDatatype() || onOperator("..")) {
 			bool has_name = matchesDeclaration();
 			Var_Declaration* arg;
-			if (has_name) {
+			if (onOperator("..")) {
+				proc->is_vararg = true;	
+				next();
+				break;
+			} else if (has_name) {
 				arg = parseDeclaration();
 			} else {
 				arg = new Var_Declaration();
@@ -1317,7 +1337,9 @@ Parse_Context::parseExpression() {
 					Expression_String* push = new Expression_String();
 					push->value = tok.word;
 					push->word = tok.word;
+					push->literal_index = string_literals.size();
 					postfix.push_back(push);
+					string_literals.push_back(push->value);
 					break;
 				}
 				case TOK_IDENTIFIER: {
@@ -1427,6 +1449,7 @@ Parse_Context::parseExpression() {
 			case EXP_INTEGER:
 			case EXP_FLOAT:
 			case EXP_IDENTIFIER:
+			case EXP_STRING:
 			case EXP_DATATYPE:
 				last.push_back(e);
 				break;	
@@ -1493,6 +1516,7 @@ Expression*
 Parse_Context::parseAndTypecheckExpression() {
 	Expression* exp = parseExpression();
 	if (exp) {
+		//exp->print();
 		exp->typecheck(this);
 	}
 	return exp;
@@ -1573,13 +1597,13 @@ Parse_Context::handleDeclaration() {
 	Var_Declaration* decl = parseDeclaration();
 	Datatype_Base* dt = decl->dt;
 
-	if (getLocal(decl->identifier)) {
-		die("duplicate variable '" + decl->identifier + "'");
-	}
-
 	// if its a procedure followed by {, it's an implementation */
 	if (dt->type == DATA_PROCEDURE && onOperator("{")) {
 		Datatype_Procedure* proc_desc = dynamic_cast<Datatype_Procedure *>(dt);
+
+		if (proc_desc->mods & MOD_FOREIGN) {
+			die("attempt to implement a foreign procedure");
+		}
 
 		for (const Var_Declaration* arg: proc_desc->args) {
 			if (!arg->named) {
@@ -1603,6 +1627,19 @@ Parse_Context::handleDeclaration() {
 		defined_procedures.push_back(node);
 		appendNode(node);
 		registerLocal(decl);
+
+	} else if (dt->type == DATA_PROCEDURE) {
+		Datatype_Procedure* proc_desc = dynamic_cast<Datatype_Procedure *>(dt);
+		
+		if (proc_desc->mods & MOD_FOREIGN) {
+			Ast_Procedure* node = new Ast_Procedure();
+			node->implemented = true;
+			node->identifier = decl->identifier;
+			node->desc = proc_desc;
+			defined_procedures.push_back(node);
+		}
+
+		registerLocal(decl);
 	
 	// declaration and assignment?
 	} else if (onOperator("=")) {
@@ -1619,15 +1656,19 @@ Parse_Context::handleDeclaration() {
 
 		next(); // skip '='
 		markOperator("", ";");
-		id->word = decl->identifier;
-		id->value = decl->identifier;
 		assign->optype = BINARY_ASSIGNMENT;
 		assign->left = id;
 		assign->right = parseAndTypecheckExpression(); 	
 		assign->left->parent = assign;
 		assign->right->parent = assign;
+		assign->right->side = LEAF_RIGHT;
 		assign->word = "=";
 		state->expression = assign;
+		id->word = decl->identifier;
+		id->value = decl->identifier;
+		id->var = decl;
+		id->eval = assign->right->eval;
+		id->side = LEAF_LEFT;
 		if (!assign->right->eval->matches(*decl->dt)) {
 			typeMismatch("=", *decl->dt, *assign->right->eval);
 		}
@@ -1669,12 +1710,16 @@ Parse_Context::handleInferredDeclaration() {
 	assign = new Expression_Binary();
 	id->value = decl->identifier;
 	id->word = decl->identifier;
+	id->var = decl;
+	id->eval = exp->eval;
 	assign->optype = BINARY_ASSIGNMENT;
 	assign->word = "=";
 	assign->right = exp;
 	assign->left = id;
 	assign->right->parent = assign;
 	assign->left->parent = assign;
+	id->side = LEAF_LEFT;
+	exp->side = LEAF_RIGHT;
 	state->expression = assign;
 	appendNode(state);
 
@@ -1731,9 +1776,17 @@ Parse_Context::handleStruct() {
 	eatOperator("{");
 	while (matchesDeclaration()) {
 		Var_Declaration* member = parseDeclaration();
+		member->offset = str->total_members;
 		str->size += member->dt->size;
 		str->members.push_back(member);
 		eatOperator(";");
+		
+		if (member->dt->isRawStruct()) {
+			Datatype_Struct* mem_str = dynamic_cast<Datatype_Struct *>(member->dt);
+			str->total_members += mem_str->total_members;
+		} else {
+			str->total_members++;
+		}
 	}
 	eatOperator("}");
 	eatOperator(";");
@@ -1791,11 +1844,15 @@ Parse_Context::handleImport() {
 
 void
 Parse_Context::registerLocal(Var_Declaration* local) {
+	if (getLocal(local->identifier)) {
+		die("duplicate variable '" + local->identifier + "'");
+	}
 	current_block->locals.push_back(local);
 }
 
 void
 Parse_Context::appendNode(Ast_Node* node) {
+	node->line = focus ? focus->line : 0;
 	if (append_target) {
 		switch (append_target->type) {
 			case AST_IF:
@@ -1871,7 +1928,8 @@ Parse_Context::generateSyntaxTree(const std::string& filename, std::vector<Token
 			parse->handleStatement();
 		}	
 	}
-			
+	
+	/*	
 	parse->root->print();
 
 	std::cout << "other information: \n";
@@ -1896,6 +1954,7 @@ Parse_Context::generateSyntaxTree(const std::string& filename, std::vector<Token
 		}
 		std::cout << std::endl;
 	}
+	*/
 
 	return parse;
 

@@ -109,9 +109,21 @@ struct Datatype_Base {
 	virtual ~Datatype_Base() {}
 	static std::string toString(const Datatype_Base&);
 	bool matches(const Datatype_Base&) const;
-	bool isRawFloat() const { return type == DATA_FLOAT && !is_ptr && !is_array; }
-	bool isRawInt() const { return type == DATA_INTEGER && !is_ptr && !is_array; }
-	bool isRawProcedure() const { return type == DATA_PROCEDURE && !is_ptr && !is_array; }
+	bool isRawFloat() const { 
+		return type == DATA_FLOAT && !is_ptr && !is_array; 
+	}
+	bool isRawInt() const { 
+		return type == DATA_INTEGER && !is_ptr && !is_array; 
+	}
+	bool isRawByte() const { 
+		return type == DATA_BYTE && !is_ptr && !is_array; 
+	}
+	bool isRawProcedure() const { 
+		return type == DATA_PROCEDURE && !is_ptr && !is_array; 
+	}
+	bool isRawStruct() const { 
+		return type == DATA_STRUCT && !is_ptr && !is_array; 
+	}
 	
 	Datatype_Type type;
 	int size = 0;
@@ -129,7 +141,7 @@ struct Var_Declaration {
 	Datatype_Base* dt;
 	std::string identifier;	
 	bool named = true; // for unnamed function args
-	int offset; // from bp or base of struct
+	int offset = 0; // from bp or base of struct
 	std::string as_string;
 };
 
@@ -140,12 +152,15 @@ struct Datatype_Procedure : public Datatype_Base {
 	
 	Datatype_Base* ret;
 	std::vector<Var_Declaration*> args;
+	bool is_vararg = false;
 };
 
 struct Datatype_Struct : public Datatype_Base {
 	Datatype_Struct(): Datatype_Base(DATA_STRUCT) {}
 	std::string tostr() const;
-
+	Var_Declaration* getField(const std::string&);
+	
+	int total_members = 0; // recursive, includes number of members in nested structs
 	std::vector<Var_Declaration*> members;
 };
 
@@ -190,7 +205,7 @@ struct Operator_Descriptor {
 };
 
 struct Expression {
-	Expression* parent;
+	Expression* parent = nullptr;
 	Expression_Type type;
 	Expression_Leaf side;
 	std::string word;
@@ -230,7 +245,8 @@ struct Expression_Identifier : public Expression {
 struct Expression_String : public Expression {
 	Expression_String(): Expression(EXP_STRING) {}
 	virtual Datatype_Base* typecheck(Parse_Context*);
-
+	
+	int literal_index = 0;
 	std::string value;
 };
 
@@ -331,6 +347,7 @@ struct Ast_For : public Ast_Node {
 struct Ast_Procedure : public Ast_Node {
 	Ast_Procedure(): Ast_Node(AST_PROCEDURE) {}
 	
+	int current_offset = 0;	
 	bool implemented = false;	
 	std::string identifier;
 	Datatype_Procedure* desc;
@@ -363,7 +380,7 @@ class Parse_Context {
 		int token_index;
 		int marked;
 		Ast_Block* root;
-		Ast_Block* current_node;
+		Ast_Node* current_node;
 		Ast_Block* current_block;
 		Ast_Procedure* current_procedure = nullptr;
 		Ast_Node* append_target = nullptr;
@@ -372,6 +389,7 @@ class Parse_Context {
 		std::vector<Token>* tokens;
 		std::vector<Var_Declaration*> defined_types;
 		std::vector<Ast_Procedure*> defined_procedures;
+		std::vector<std::string> string_literals;
 		Datatype_Base* type_int;
 		Datatype_Base* type_float;
 		Datatype_Base* type_byte;

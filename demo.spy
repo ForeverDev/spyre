@@ -1,7 +1,25 @@
-import "sample.spy";
+import "standard.spy";
 
-main: () -> void {
+struct ProcedureContainer {
+	argument: int;
+	procedure_name: ^byte;
+	procedure: (int) -> int;
+};
+
+factorial: (n: int) -> int {
+	if (n <= 1)
+		return 1;
+	return n * factorial(n - 1);
+}
+
+main: (argc: int, argv: ^^byte) -> void {
 	
-	vec := make_vector(10.5, 13.2);	
-
+	container: ProcedureContainer;	
+	container.argument = 5;
+	container.procedure = factorial;
+	container.procedure_name = "factorial";
+	
+	printf("%lld\n", container.procedure(container.argument));	
+	printf("%s(%lld) = %lld\n", container.procedure_name, container.argument, container.procedure(container.argument));	
+	
 }

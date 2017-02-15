@@ -131,6 +131,7 @@ Lexer::handleOperator() {
 		"->",
 		">=",
 		"<=",
+		"..",
 		""
 	};
 
@@ -180,7 +181,24 @@ Lexer::handleString() {
 		if (p == '"') {
 			break;
 		}
-		buf += get();
+		switch (p) {
+			/*
+			case '\\': {
+				get();
+				char np = get();
+				switch (np) {
+					case 'n': buf += '\n'; break;
+					case 't': buf += '\t'; break;
+					case '0': buf += '\0'; break;
+					case 'b': buf += '\b'; break;
+				}
+				break;
+			}
+			*/
+			default:
+				buf += get();
+
+		}
 	}
 	eat(); // eat closing "
 	t.id = buf;
