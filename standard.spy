@@ -1,1 +1,3 @@
-printf: foreign (format: ^byte, ..) -> int;
+printf: foreign (^byte, ..) -> int;
+malloc: foreign (int) -> ^byte;
+free:   foreign (^byte) -> void;

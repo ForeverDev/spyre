@@ -21,6 +21,8 @@ enum Ast_Node_Type {
 	AST_RETURN,
 	AST_DECLARATION,
 	AST_PROCEDURE,
+	AST_BREAK,
+	AST_CONTINUE
 };
 
 enum Datatype_Type {
@@ -107,6 +109,7 @@ enum Operator_Operands {
 struct Datatype_Base {
 	Datatype_Base(Datatype_Type t): type(t) {}
 	virtual ~Datatype_Base() {}
+	virtual Datatype_Base* clone() const;
 	static std::string toString(const Datatype_Base&);
 	bool matches(const Datatype_Base&) const;
 	bool isRawFloat() const { 
@@ -124,6 +127,7 @@ struct Datatype_Base {
 	bool isRawStruct() const { 
 		return type == DATA_STRUCT && !is_ptr && !is_array; 
 	}
+	void applyMods(Datatype_Base*) const;
 	
 	Datatype_Type type;
 	int size = 0;
@@ -149,6 +153,7 @@ struct Datatype_Procedure : public Datatype_Base {
 	Datatype_Procedure(): Datatype_Base(DATA_PROCEDURE) {
 		size = 8;
 	}
+	virtual Datatype_Procedure* clone() const;
 	
 	Datatype_Base* ret;
 	std::vector<Var_Declaration*> args;
@@ -159,6 +164,7 @@ struct Datatype_Struct : public Datatype_Base {
 	Datatype_Struct(): Datatype_Base(DATA_STRUCT) {}
 	std::string tostr() const;
 	Var_Declaration* getField(const std::string&);
+	virtual Datatype_Struct* clone() const;
 	
 	int total_members = 0; // recursive, includes number of members in nested structs
 	std::vector<Var_Declaration*> members;
@@ -168,30 +174,35 @@ struct Datatype_Integer : public Datatype_Base {
 	Datatype_Integer(): Datatype_Base(DATA_INTEGER) {
 		size = 8;
 	}
+	virtual Datatype_Integer* clone() const;
 };
 
 struct Datatype_Float : public Datatype_Base {
 	Datatype_Float(): Datatype_Base(DATA_FLOAT) {
 		size = 8;
 	}
+	virtual Datatype_Float* clone() const;
 };
 
 struct Datatype_Byte : public Datatype_Base {
 	Datatype_Byte(): Datatype_Base(DATA_BYTE) {
 		size = 1;
 	}
+	virtual Datatype_Byte* clone() const;
 };
 
 struct Datatype_Bool : public Datatype_Base {
 	Datatype_Bool(): Datatype_Base(DATA_BOOL) {
 		size = 8;
 	}
+	virtual Datatype_Bool* clone() const;
 };
 
 struct Datatype_Void : public Datatype_Base {
 	Datatype_Void(): Datatype_Base(DATA_VOID) {
 		size = 0;
 	}
+	virtual Datatype_Void* clone() const;
 };
 
 struct Operator_Descriptor {
@@ -213,7 +224,7 @@ struct Expression {
 
 	Expression(Expression_Type t): type(t) {}
 	virtual ~Expression() {}
-	virtual Datatype_Base* typecheck(Parse_Context*) {};
+	virtual Datatype_Base* typecheck(Parse_Context*) { return nullptr; };
 	void print(int) const;
 	bool isBinaryType(Expression_Binary_Type) const;
 	bool isUnaryType(Expression_Unary_Type) const;
@@ -259,22 +270,26 @@ struct Expression_Datatype : public Expression {
 
 struct Expression_Operator : public Expression {
 	Expression_Operator(Expression_Type t): Expression(t) {}
-	virtual Datatype_Base* typecheck(Parse_Context*) {};
+	virtual Datatype_Base* typecheck(Parse_Context*) { return nullptr; };
 
 	const Operator_Descriptor* desc = nullptr;	
 };
 
 struct Expression_Call : public Expression_Operator {
 	Expression_Call(): Expression_Operator(EXP_CALL) {
+		// TODO is this horrible?  should all call expressions point
+		// to the same operator descriptor?  each one having their
+		// own instance is kind of nasty
 		desc = new Operator_Descriptor("CALL", 11, ASSOC_LEFT, OP_UNARY);	
 	}
 	~Expression_Call() {
 		delete desc;
 	}
 	virtual Datatype_Base* typecheck(Parse_Context*);
-
+	
 	Expression* procedure = nullptr;
 	Expression* argument = nullptr;
+	std::vector<Expression*> arg_ptrs;
 	int num_args = 0;
 };	
 
@@ -373,6 +388,15 @@ struct Ast_Return : public Ast_Node {
 	Expression* expression = nullptr;
 };
 
+struct Ast_Break : public Ast_Node {
+	Ast_Break(): Ast_Node(AST_BREAK) {}
+};
+
+struct Ast_Continue : public Ast_Node {
+	Ast_Continue(): Ast_Node(AST_CONTINUE) {}
+};
+
+
 class Parse_Context {
 	
 	public:
@@ -409,6 +433,8 @@ class Parse_Context {
 		void handleDeclaration();
 		void handleInferredDeclaration();
 		void handleReturn();
+		void handleBreak();
+		void handleContinue();
 		void handleStruct();
 		void handleDefine();
 		void handleImport();

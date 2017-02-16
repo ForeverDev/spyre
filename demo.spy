@@ -1,25 +1,42 @@
 import "standard.spy";
 
-struct ProcedureContainer {
-	argument: int;
-	procedure_name: ^byte;
-	procedure: (int) -> int;
+struct Person {
+	name: ^byte;
+	age: int;
 };
 
-factorial: (n: int) -> int {
-	if (n <= 1)
-		return 1;
-	return n * factorial(n - 1);
+struct House {
+	p: Person;
+	address: int;
+};
+
+make_alphabet: () -> ^byte {
+	i: int;
+	buffer := malloc(27);
+	for (i = 0; i < 26; i += 1) {
+		$(buffer + #^byte i) = #byte (97 + i);
+	}
+	$(buffer + #^byte 26) = #byte 0;
+	return buffer;
 }
 
-main: (argc: int, argv: ^^byte) -> void {
+edit_integer: (p: ^int, value: int) -> void {
+	$p = value;
+}
+
+increment_integer: (p: ^int) -> void {
+	$p += 1;
+}
+
+main: () -> void {
 	
-	container: ProcedureContainer;	
-	container.argument = 5;
-	container.procedure = factorial;
-	container.procedure_name = "factorial";
-	
-	printf("%lld\n", container.procedure(container.argument));	
-	printf("%s(%lld) = %lld\n", container.procedure_name, container.argument, container.procedure(container.argument));	
-	
+	h: House;
+	h.p.name = "David";
+	h.p.age = 17;
+	h.address = 6;
+
+	increment_integer(@h.p.age);
+
+	printf("%s is %lld years old\n", h.p.name, h.p.age);
+
 }

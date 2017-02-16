@@ -25,6 +25,8 @@ class C_Code_Generator {
 		void writeLiterals();
 		void writeWhile();
 		void writeFor();
+		void writeBreak();
+		void writeContinue();
 		void writeGoto(int);
 		std::string constructDatatype(Datatype_Base*);
 		std::string constructDatatypeForC(Datatype_Base*);
@@ -43,7 +45,10 @@ class C_Code_Generator {
 		std::string dereferenceRegister(int, const std::string&);
 		
 		static const int NUM_REGS = 12;
+		static const bool OPT_USELESS = true;
 		int label_count = 0;
+		int break_label = 0;
+		int continue_label = 0;
 		std::string union_typename;	
 		std::string c_int_type;
 		std::string c_float_type;

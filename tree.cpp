@@ -107,7 +107,6 @@ Expression::isBinaryType(Expression_Binary_Type type) const {
 
 bool
 Expression::isAssignment() const {
-	if (!this) return false;
 	return (
 		isBinaryType(BINARY_ASSIGNMENT) ||
 		isBinaryType(BINARY_INCREMENT_BY) ||
@@ -194,7 +193,7 @@ Expression_Binary::wordToBinaryType(const std::string& word) {
 		return BINARY_ASSIGNMENT;
 	else if (word == ".")
 		return BINARY_MEMBER_DEREFERENCE;
-	else if (word == ",")
+	else
 		return BINARY_COMMA;
 }
 
@@ -212,7 +211,7 @@ Expression_Unary::wordToUnaryType(const std::string& word) {
 		return UNARY_DEREFERENCE;
 	else if (word == "@")
 		return UNARY_ADDRESS_OF;
-	else if (word == "new")
+	else
 		return UNARY_NEW;
 }
 
@@ -242,7 +241,7 @@ Expression_Identifier::typecheck(Parse_Context* context) {
 	Var_Declaration* local = context->getLocal(value);
 	var = local;
 	if (!local) {
-		return (eval = context->getTypeInfo("void"));
+		context->undeclaredIdentifier(value);
 	}
 	return (eval = local->dt);
 }
@@ -291,7 +290,36 @@ Expression_Call::typecheck(Parse_Context* context) {
 		}
 	};
 
+	// mark arg pointers
 	if (num_args == 1) {
+		arg_ptrs.push_back(argument);
+	} else if (num_args == 2) {
+		Expression_Binary* comma = dynamic_cast<Expression_Binary *>(argument);
+		arg_ptrs.push_back(comma->left);
+		arg_ptrs.push_back(comma->right);
+	} else if (num_args > 2) {
+		for (int i = 0; i < num_args - 2; i++) {
+
+			Expression_Binary* comma = dynamic_cast<Expression_Binary *>(argument);
+			Expression_Binary* scanner;
+			// walk down to the lowest comma
+			for (int i = 0; i < num_args - 2; i++) {
+				comma = dynamic_cast<Expression_Binary *>(comma->left);
+			}
+			
+			// assign to arg_ptrs using scanner
+			arg_ptrs.push_back(comma->left);
+			arg_ptrs.push_back(comma->right);
+			scanner = dynamic_cast<Expression_Binary *>(comma->parent);
+			while (scanner) {
+				arg_ptrs.push_back(scanner->right);
+				scanner = dynamic_cast<Expression_Binary *>(scanner->parent);	
+			}
+		}
+	}
+
+	if (num_args == 1) {
+		arg_ptrs.push_back(argument);
 		compare_args(proc->args[0]->dt, argument->eval, 0);
 	} else if (expected_args > 1) {
 		Expression_Binary* comma = dynamic_cast<Expression_Binary *>(argument);
@@ -299,6 +327,7 @@ Expression_Call::typecheck(Parse_Context* context) {
 		for (int i = 0; i < num_args - 2; i++) {
 			comma = dynamic_cast<Expression_Binary *>(comma->left);
 		}
+		
 		compare_args(proc->args[0]->dt, comma->left->eval, 0);
 		compare_args(proc->args[1]->dt, comma->right->eval, 1);
 		for (int i = 0; i < expected_args - 2; i++) {
@@ -483,24 +512,42 @@ Expression_Binary::typecheck(Parse_Context* context) {
 			return (eval = found_field->dt);
 		}
 	}
+	return nullptr;
 }
 
 Datatype_Base*
 Expression_Unary::typecheck(Parse_Context* context) {
 	Datatype_Base* op = operand->typecheck(context);
 	switch (optype) {
-		case UNARY_NEW:
+		case UNARY_NEW: {
+			Expression_Datatype* dt = dynamic_cast<Expression_Datatype *>(operand);
+			if (!dt) {
+				context->die("the operand 'new' must take a datatype as an operand");
+			}
+			// @MEMORYLEAK find a better way to do this 
 			break;	
+		}
+		case UNARY_DEREFERENCE: {
+			if (!op->is_ptr) {
+				context->die("the '$' operator can only be used on a pointer");
+			}	
+			Datatype_Base* ret = op->clone();
+			ret->ptr_dim--;
+			ret->is_ptr = ret->ptr_dim > 0;
+			return (eval = ret);
+		}
+		case UNARY_ADDRESS_OF: {
+			Datatype_Base* ret = op->clone();
+			ret->ptr_dim++;
+			ret->is_ptr = ret->ptr_dim > 0;
+			return (eval = ret);
+		}
 	}
 	return (eval = op);
 }
 
 void
 Expression::print(int ind = 0) const {
-
-	if (!this) {
-		return;
-	}
 
 	auto indent = [](int amount) -> void {
 		for (int i = 0; i < amount; i++) {
@@ -555,10 +602,6 @@ Expression::print(int ind = 0) const {
 void
 Ast_Node::print(int ind = 0) const {
 
-	if (!this) {
-		return;
-	}
-
 	auto indent = [](int amount) -> void {
 		for (int i = 0; i < amount; i++) {
 			std::cout << "  ";
@@ -573,6 +616,8 @@ Ast_Node::print(int ind = 0) const {
 	const Ast_For*       e = dynamic_cast<const Ast_For *>(this);
 	const Ast_Procedure* f = dynamic_cast<const Ast_Procedure *>(this);
 	const Ast_Return*    g = dynamic_cast<const Ast_Return *>(this);
+	const Ast_Break*     h = dynamic_cast<const Ast_Break *>(this);
+	const Ast_Continue*  i = dynamic_cast<const Ast_Continue *>(this);
 
 	indent(ind);
 	
@@ -682,6 +727,10 @@ Ast_Node::print(int ind = 0) const {
 		std::cout << "]\n";
 		indent(ind);
 		std::cout << "]\n";
+	} else if (h) {
+		std::cout << "BREAK\n";
+	} else if (i) {
+		std::cout << "CONTINUE\n";
 	}
 
 }
@@ -789,6 +838,72 @@ Datatype_Base::toString(const Datatype_Base& d) {
 	}
 
 	return ret;
+}
+
+void
+Datatype_Base::applyMods(Datatype_Base* other) const {
+	other->ptr_dim = ptr_dim;
+	other->is_array = is_array;
+}
+
+Datatype_Integer*
+Datatype_Integer::clone() const {
+	Datatype_Integer* copy = new Datatype_Integer();
+	applyMods(copy);	
+	return copy;
+}
+
+Datatype_Float*
+Datatype_Float::clone() const {
+	Datatype_Float* copy = new Datatype_Float();
+	applyMods(copy);	
+	return copy;
+}
+
+Datatype_Byte*
+Datatype_Byte::clone() const {
+	Datatype_Byte* copy = new Datatype_Byte();
+	applyMods(copy);	
+	return copy;
+}
+
+Datatype_Bool*
+Datatype_Bool::clone() const {
+	Datatype_Bool* copy = new Datatype_Bool();
+	applyMods(copy);	
+	return copy;
+}
+
+Datatype_Void*
+Datatype_Void::clone() const {
+	Datatype_Void* copy = new Datatype_Void();
+	applyMods(copy);	
+	return copy;
+}
+
+Datatype_Struct*
+Datatype_Struct::clone() const {
+	Datatype_Struct* copy = new Datatype_Struct();
+	applyMods(copy);
+	for (Var_Declaration* decl: members) {
+		copy->members.push_back(decl);
+	}
+	copy->total_members = total_members;
+	return copy;
+}
+
+Datatype_Procedure*
+Datatype_Procedure::clone() const {
+	Datatype_Procedure* copy = new Datatype_Procedure();
+	copy->ret = ret->clone();
+	for (Var_Declaration* decl: args) {
+		copy->args.push_back(decl);
+	}
+	return copy;
+}
+
+Datatype_Base*
+Datatype_Base::clone() const {
 }
 
 std::string
@@ -1352,7 +1467,7 @@ Parse_Context::parseExpression() {
 				case TOK_OPERATOR: {
 					switch (tok.i) {
 						case '(': { 
-							if (prev && prev->type == TOK_IDENTIFIER) {
+							if (prev && prev->type == TOK_IDENTIFIER && !getTypeInfo(prev->word)) {
 								int finish_save = marked;
 								Expression_Call* push = new Expression_Call();
 								markOperator("(", ")");
@@ -1762,6 +1877,22 @@ Parse_Context::handleReturn() {
 }
 
 void
+Parse_Context::handleBreak() {
+	Ast_Break* b = new Ast_Break();	
+	eatIdentifier("break");
+	eatOperator(";");
+	appendNode(b);
+}
+
+void
+Parse_Context::handleContinue() {
+	Ast_Continue* b = new Ast_Continue();	
+	eatIdentifier("continue");
+	eatOperator(";");
+	appendNode(b);
+}
+
+void
 Parse_Context::handleStruct() {
 	Var_Declaration* decl = new Var_Declaration();
 	Datatype_Struct* str = new Datatype_Struct();
@@ -1908,6 +2039,10 @@ Parse_Context::generateSyntaxTree(const std::string& filename, std::vector<Token
 			parse->handleFor();
 		} else if (word == "return") {
 			parse->handleReturn();
+		} else if (word == "break") {
+			parse->handleBreak();
+		} else if (word == "continue") {
+			parse->handleContinue();
 		} else if (word == "struct") {
 			parse->handleStruct();
 		} else if (word == "define") {

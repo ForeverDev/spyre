@@ -35,6 +35,10 @@ C_Code_Generator::incrementRegisterValue(int reg_index, const std::string& field
 
 void
 C_Code_Generator::simpleRegisterMove(int target, int from) {
+	// catch the case where a register is moved into itself...
+	if (target == from && OPT_USELESS) {
+		return;
+	}
 	output << registerField(target, "i") << " = " << registerField(from, "i") << ";\n";
 }
 
@@ -101,7 +105,7 @@ C_Code_Generator::constructDeclaration(Var_Declaration* decl) {
 
 std::string
 C_Code_Generator::constructRegister(int reg_index) {
-	std::string ret = "R[";
+	std::string ret = "__R__[";
 	ret += std::to_string(reg_index);
 	ret += "]";
 	return ret;
@@ -109,12 +113,12 @@ C_Code_Generator::constructRegister(int reg_index) {
 
 std::string
 C_Code_Generator::constructLiteral(int index) {
-	return "LIT[" + std::to_string(index) + "]";
+	return "__LIT__[" + std::to_string(index) + "]";
 }
 
 std::string
 C_Code_Generator::constructLabel(int label) {
-	return "L" + std::to_string(label);
+	return "__L" + std::to_string(label) + "__";
 }
 
 void
@@ -142,7 +146,7 @@ C_Code_Generator::writeTypedefs() {
 
 void
 C_Code_Generator::writeLiterals() {
-	output << "char* LIT[] = {\n";
+	output << "static char* __LIT__[] = {\n";
 	int size = context->string_literals.size();
 	for (int i = 0; i < size; i++) {
 		std::string& lit = context->string_literals[i];
@@ -153,6 +157,7 @@ C_Code_Generator::writeLiterals() {
 		output << std::endl;
 	}
 	output << "};\n\n";
+	output << "static int __line__ = 0;\n\n";
 }	
 
 void
@@ -190,7 +195,7 @@ C_Code_Generator::writeProcedure() {
 	header += "(";
 	length = header.length() - cut;
 	output << header;
-
+	
 	size_t arg_count = desc->args.size();
 	for (int i = 0; i < arg_count; i++) {
 		output << constructDeclaration(desc->args[i]);
@@ -259,6 +264,18 @@ C_Code_Generator::writeReturn() {
 }
 
 void
+C_Code_Generator::writeBreak() {
+	writeLinedComment("break");
+	writeGoto(break_label);
+}
+
+void
+C_Code_Generator::writeContinue() {
+	writeLinedComment("continue");
+	writeGoto(continue_label);
+}
+
+void
 C_Code_Generator::writeIf() {
 	Ast_If* if_node = dynamic_cast<Ast_If *>(context->current_node);
 	int bottom_label = label_count++;
@@ -277,6 +294,10 @@ C_Code_Generator::writeWhile() {
 	Ast_While* while_node = dynamic_cast<Ast_While *>(context->current_node);
 	int top_label = label_count++;
 	int bottom_label = label_count++;
+	int save_break = break_label;
+	int save_continue = continue_label;
+	break_label = bottom_label;
+	continue_label = top_label;
 	writeLinedComment("while loop");
 	writeComment("top label:    " + std::to_string(top_label));
 	writeComment("bottom label: " + std::to_string(bottom_label));
@@ -288,6 +309,8 @@ C_Code_Generator::writeWhile() {
 	writeNode(while_node->child);
 	writeGoto(top_label);
 	defineLabel(bottom_label);
+	break_label = save_break;
+	continue_label = save_continue;
 }
 
 void
@@ -295,6 +318,10 @@ C_Code_Generator::writeFor() {
 	Ast_For* for_node = dynamic_cast<Ast_For *>(context->current_node);
 	int top_label = label_count++;
 	int bottom_label = label_count++;
+	int save_break = break_label;
+	int save_continue = continue_label;
+	break_label = bottom_label;
+	continue_label = top_label;
 	writeLinedComment("for loop");
 	writeComment("top label:    " + std::to_string(top_label));
 	writeComment("bottom label: " + std::to_string(bottom_label));
@@ -309,6 +336,8 @@ C_Code_Generator::writeFor() {
 	writeExpression(for_node->each);
 	writeGoto(top_label);
 	defineLabel(bottom_label);
+	break_label = save_break;
+	continue_label = save_continue;
 }
 
 void
@@ -343,6 +372,7 @@ C_Code_Generator::writeExpression(Expression* exp) {
 			}
 		}
 		context->die("!!! out of register space !!!");
+		return 0;
 	};
 
 	auto free_register = [&](int reg_index) -> void {
@@ -394,7 +424,8 @@ C_Code_Generator::writeExpression(Expression* exp) {
 		bool is_left_assign = parent != nullptr && parent->isAssignment() && exp->side == LEAF_LEFT;
 		bool parent_is_dot = parent != nullptr && parent->isBinaryType(BINARY_MEMBER_DEREFERENCE);
 		bool parent_parent_is_dot = parent_is_dot && parent->parent != nullptr && parent->parent->isBinaryType(BINARY_MEMBER_DEREFERENCE);
-		bool dont_dereference = is_left_assign || parent_is_dot;
+		bool parent_is_address_of = parent != nullptr && parent->isUnaryType(UNARY_ADDRESS_OF);
+		bool dont_dereference = is_left_assign || parent_is_dot || parent_is_address_of;
 		switch (exp->type) {
 			case EXP_INTEGER: {
 				Expression_Integer* i = dynamic_cast<Expression_Integer *>(exp);
@@ -415,16 +446,17 @@ C_Code_Generator::writeExpression(Expression* exp) {
 					context->die("idfk panic!!!");
 				}
 				int reg = get_register();
+				std::string prefix = get_prefix(i->eval);
 				if (i->eval->isRawProcedure()) {
 					setRegisterValueWithCast(reg, "i", i->value, "intptr_t");
-				} else if (is_left_assign || parent_is_dot) {
-					if (i->eval->isRawStruct()) {
-						setRegisterValueWithCast(reg, "i", i->value, "intptr_t");	
-					} else {
-						setRegisterValueWithCast(reg, "i", "&" + i->value, "intptr_t");	
-					}
+				} else if (i->eval->isRawStruct()) {
+					setRegisterValueWithCast(reg, "i", i->value, "intptr_t");
+				} else if (parent_is_dot && i->eval->ptr_dim == 1) {
+					setRegisterValue(reg, prefix, i->value + "." + prefix);
+				} else if (dont_dereference) {
+					setRegisterValueWithCast(reg, "i", "&" + i->value, "intptr_t");	
 				} else {
-					setRegisterValue(reg, "i", i->value + ".i");
+					setRegisterValue(reg, prefix, i->value + "." + prefix);
 				}
 				return reg;
 			}
@@ -434,49 +466,92 @@ C_Code_Generator::writeExpression(Expression* exp) {
 				setRegisterValueWithCast(reg, "i", constructLiteral(str->literal_index), "intptr_t");
 				return reg;
 			}
+			case EXP_CAST: {
+				Expression_Cast* cast = dynamic_cast<Expression_Cast *>(exp);
+				int reg = do_generate(cast->operand);
+				std::string target = get_prefix(cast->target);
+				std::string op_type = get_prefix(cast->operand->eval);
+				if (target != op_type) {
+					if (target == "i" && op_type == "f") {
+						setRegisterValueWithCast(reg, "i", registerField(reg, "f"), c_int_type);
+					} else if (target == "f" && op_type == "i") {
+						setRegisterValueWithCast(reg, "f", registerField(reg, "i"), c_float_type);
+					}
+				}
+				return reg;
+			};
 			case EXP_CALL: {
 				Expression_Call* call = dynamic_cast<Expression_Call *>(exp);
 				Datatype_Procedure* proc = dynamic_cast<Datatype_Procedure *>(call->procedure->eval);
 				std::string cast = make_function_cast(proc);
 				int r0 = do_generate(call->procedure);	
+				int r1;
 				std::string built_call = "";
 				if (call->argument) {
 					// base register for call is r1, final register is (r1 + num_args)
-					int r1 = do_generate(call->argument);
-					built_call += "((";
-					built_call += cast;
-					built_call += ")";
-					built_call += registerField(r0, "i");
-					built_call += ")(";
-					for (int i = 0; i < call->num_args; i++) {
-						int arg_reg = r1 + i;
-						built_call += registerBare(arg_reg);
-						if (proc->mods & MOD_FOREIGN) {
-							built_call += ".i";
-						}
-						if (i < call->num_args - 1) {
-							built_call += ",";
-						}
+					r1 = do_generate(call->argument);
+				}
+				built_call += "((";
+				built_call += cast;
+				built_call += ")";
+				built_call += registerField(r0, "i");
+				built_call += ")(";
+				for (int i = 0; i < call->num_args; i++) {
+					int arg_reg = r1 + i;
+					built_call += registerBare(arg_reg);
+					if (proc->mods & MOD_FOREIGN) {
+						built_call += "." + get_prefix(call->arg_ptrs[i]->eval);
 					}
-					built_call += ")";
-					if (!(proc->mods & MOD_FOREIGN) && proc->ret->type != DATA_VOID) {
-						built_call += ".";
-						built_call += get_prefix(proc->ret);
+					if (i < call->num_args - 1) {
+						built_call += ",";
 					}
-					for (int i = 0; i < call->num_args; i++) {
-						free_register(r1 + i);
-					}
-					if (proc->ret->type != DATA_VOID) {
-						setRegisterValue(r0, "i", built_call);
-					} else {
-						output << built_call << ";\n";
-					}
+				}
+				built_call += ")";
+				if (!(proc->mods & MOD_FOREIGN) && proc->ret->type != DATA_VOID) {
+					built_call += ".";
+					built_call += get_prefix(proc->ret);
+				}
+				for (int i = 0; i < call->num_args; i++) {
+					free_register(r1 + i);
+				}
+				if (proc->ret->type != DATA_VOID) {
+					setRegisterValue(r0, get_prefix(proc->ret), built_call);
+				} else {
+					output << built_call << ";\n";
 				}
 				if (proc->ret->type == DATA_VOID) {
 					free_register(r0);
 					return -1;
 				}
 				return r0;
+			}
+			case EXP_UNARY: {
+				Expression_Unary* unop = dynamic_cast<Expression_Unary *>(exp);
+				std::string prefix_result = get_prefix(unop->eval);
+				std::string prefix_operand = get_prefix(unop->operand->eval);
+				switch (unop->optype) {
+					case UNARY_DEREFERENCE: {
+						int r0 = do_generate(unop->operand);
+						// pointer to a struct is same as struct
+						if (unop->operand->eval->type == DATA_STRUCT && unop->operand->eval->ptr_dim == 1) {
+							return r0;
+						}
+						if (dont_dereference) {
+							return r0;
+						}
+						if (prefix_operand == "i") {
+							setRegisterValue(r0, "i", dereferenceRegister(r0, c_int_type));
+						} else if (prefix_operand == "f") {
+							setRegisterValue(r0, "f", dereferenceRegister(r0, c_float_type));
+						}
+						return r0;
+					}	
+					case UNARY_ADDRESS_OF: { 
+						int r0 = do_generate(unop->operand);
+						return r0;
+					}
+				}
+				break;
 			}
 			case EXP_BINARY: {
 				Expression_Binary* binop = dynamic_cast<Expression_Binary *>(exp);
@@ -515,12 +590,25 @@ C_Code_Generator::writeExpression(Expression* exp) {
 					case BINARY_ASSIGNMENT: {
 						int r0 = do_generate(binop->left);
 						int r1 = do_generate(binop->right);
-						if (prefix_result == "i") {
+						if (prefix_right == "i") {
 							output << "*(int64_t *)";
-						} else if (prefix_result == "f") {
+						} else if (prefix_right == "f") {
 							output << "*(double *)";
 						}
-						setRegisterValue(r0, prefix_left, registerField(r1, prefix_right));
+						setRegisterValue(r0, "i", registerField(r1, prefix_right));
+						free_register(r0);
+						free_register(r1);
+						return r0;
+					}
+					case BINARY_INCREMENT_BY: {
+						int r0 = do_generate(binop->left);
+						int r1 = do_generate(binop->right);
+						if (prefix_right == "i") {
+							output << "*(int64_t *)";
+						} else if (prefix_right == "f") {
+							output << "*(double *)";
+						}
+						incrementRegisterValue(r0, "i", registerField(r1, prefix_right));
 						free_register(r0);
 						free_register(r1);
 						return r0;
@@ -530,7 +618,9 @@ C_Code_Generator::writeExpression(Expression* exp) {
 						Datatype_Struct* str = dynamic_cast<Datatype_Struct *>(binop->left->eval);
 						Var_Declaration* field = str->getField(f_exp->value);
 						int r0 = do_generate(binop->left);
-						incrementRegisterValue(r0, "i", std::to_string(field->offset) + "*sizeof(" + union_typename + ")");
+						if (field->offset > 0 || !OPT_USELESS) {
+							incrementRegisterValue(r0, "i", std::to_string(field->offset) + "*sizeof(" + union_typename + ")");
+						}
 						if (!dont_dereference) {
 							if (prefix_result == "i" ) {
 								setRegisterValue(r0, "i", dereferenceRegister(r0, c_int_type));	
@@ -544,6 +634,7 @@ C_Code_Generator::writeExpression(Expression* exp) {
 				break;
 			}
 		}
+		return 0;
 	};
 
 	return do_generate(exp);
@@ -586,6 +677,12 @@ C_Code_Generator::writeNode(Ast_Node* node) {
 		case AST_FOR:
 			writeFor();
 			break;
+		case AST_BREAK:
+			writeBreak();
+			break;
+		case AST_CONTINUE:
+			writeContinue();
+			break;
 	}
 
 	context->current_node = save_node;
@@ -599,7 +696,7 @@ C_Code_Generator::generateCode(const std::string& output_name, Parse_Context* co
 	C_Code_Generator* gen = new C_Code_Generator();
 	gen->context = context;
 	gen->output.open(output_name);
-	gen->union_typename = "_T_";
+	gen->union_typename = "__T__";
 	gen->c_int_type = "int64_t";
 	gen->c_float_type = "double";
 	gen->c_byte_type = "uint8_t";
